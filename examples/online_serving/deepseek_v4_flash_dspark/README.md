@@ -70,16 +70,15 @@ shapes after installation.
 
 ## Launch
 
-Pass either layout and the local model path:
+Pass either layout. Hugging Face downloads the checkpoint automatically when
+it is not already cached:
 
 ```bash
-MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731 \
-  examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp4pp4
+examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp4pp4
 ```
 
 ```bash
-MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731 \
-  examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp8pp2
+examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp8pp2
 ```
 
 The default `PROFILE=baseline` reproduces the single-request decode baseline:
@@ -88,7 +87,7 @@ CUDA graphs enabled, and prefix caching disabled. Production settings can be
 overridden, for example:
 
 ```bash
-MODEL_PATH=/path/to/model MAX_MODEL_LEN=32768 MAX_NUM_SEQS=8 \
+MAX_MODEL_LEN=32768 MAX_NUM_SEQS=8 \
   EXTRA_VLLM_ARGS="--enable-prefix-caching" \
   examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp8pp2
 ```
@@ -104,12 +103,12 @@ The long-context profile is deliberately separate from the decode-throughput
 baseline:
 
 ```bash
-MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731 PROFILE=context \
+PROFILE=context \
   examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp4pp4
 ```
 
 ```bash
-MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731 PROFILE=context \
+PROFILE=context \
   examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp8pp2
 ```
 
@@ -146,7 +145,7 @@ limit for output and runtime margin.
 Reproduce both the cold and cached-extension checks against a live server:
 
 ```bash
-MODEL_PATH=/path/to/model TARGET_TOKENS=500000 EXTEND_TOKENS=1000000 \
+TARGET_TOKENS=500000 EXTEND_TOKENS=1000000 \
   examples/online_serving/deepseek_v4_flash_dspark/bench_context.py
 ```
 
@@ -193,7 +192,7 @@ but reduced the mixed aggregate by about 3.8%. Select it explicitly for a
 predictable high-acceptance workload:
 
 ```bash
-MODEL_PATH=/path/to/model NUM_SPECULATIVE_TOKENS=7 \
+NUM_SPECULATIVE_TOKENS=7 \
   examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp4pp4
 ```
 

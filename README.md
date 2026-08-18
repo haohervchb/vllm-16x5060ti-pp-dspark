@@ -340,7 +340,7 @@ with a 480,000-token prompt plus 64 output tokens.
 
 ```bash
 cd ~/vllm-16x5060ti-pp-dspark
-export MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731
+export MODEL_PATH=deepseek-ai/DeepSeek-V4-Flash-0731
 export CUDA_HOME="$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13"
 export PATH="$CUDA_HOME/bin:$PATH"
 export FLASHINFER_CUDA_ARCH_LIST=12.0f
@@ -386,7 +386,7 @@ was validated with a 1,000,000-token prompt plus 64 output tokens.
 
 ```bash
 cd ~/vllm-16x5060ti-pp-dspark
-export MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731
+export MODEL_PATH=deepseek-ai/DeepSeek-V4-Flash-0731
 export CUDA_HOME="$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13"
 export PATH="$CUDA_HOME/bin:$PATH"
 export FLASHINFER_CUDA_ARCH_LIST=12.0f

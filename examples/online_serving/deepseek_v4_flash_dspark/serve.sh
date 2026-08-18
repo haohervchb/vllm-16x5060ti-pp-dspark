@@ -5,12 +5,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 VENV_PYTHON="${VENV_PYTHON:-${REPO_ROOT}/.venv/bin/python}"
 VLLM_BIN="${VLLM_BIN:-${REPO_ROOT}/.venv/bin/vllm}"
+MODEL_PATH="${MODEL_PATH:-deepseek-ai/DeepSeek-V4-Flash-0731}"
 LAYOUT="${1:-}"
 
-if [[ -z "${MODEL_PATH:-}" ]]; then
-  echo "Set MODEL_PATH to the DeepSeek-V4-Flash-0731 checkpoint." >&2
-  exit 2
-fi
 if [[ ! -x "${VENV_PYTHON}" || ! -x "${VLLM_BIN}" ]]; then
   echo "Expected the vLLM environment at ${REPO_ROOT}/.venv" >&2
   exit 2
@@ -30,7 +27,7 @@ case "${LAYOUT}" in
     DEFAULT_GPU_UTILIZATION="0.92"
     ;;
   *)
-    echo "Usage: MODEL_PATH=/path/to/model $0 {tp4pp4|tp8pp2}" >&2
+    echo "Usage: $0 {tp4pp4|tp8pp2}" >&2
     exit 2
     ;;
 esac
@@ -111,7 +108,6 @@ KV_CACHE_MEMORY_BYTES="${KV_CACHE_MEMORY_BYTES:-${DEFAULT_KV_CACHE_MEMORY_BYTES}
 NUM_SPECULATIVE_TOKENS="${NUM_SPECULATIVE_TOKENS:-5}"
 VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
 VLLM_PORT="${VLLM_PORT:-8099}"
-SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-vllm}"
 
 if ! [[ "${NUM_SPECULATIVE_TOKENS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "NUM_SPECULATIVE_TOKENS must be a positive integer." >&2
@@ -160,7 +156,6 @@ exec "${VLLM_BIN}" serve "${MODEL_PATH}" \
   --port "${VLLM_PORT}" \
   "${prefix_caching_args[@]}" \
   --enable-chunked-prefill \
-  --served-model-name "${SERVED_MODEL_NAME}" \
   --compilation-config '{"fast_moe_cold_start":false}' \
   --distributed-executor-backend mp \
   --load-format auto \

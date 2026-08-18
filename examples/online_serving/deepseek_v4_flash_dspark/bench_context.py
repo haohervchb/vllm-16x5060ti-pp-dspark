@@ -10,8 +10,8 @@ from transformers import AutoTokenizer
 
 
 URL = os.environ.get("VLLM_URL", "http://127.0.0.1:8099/v1/completions")
-MODEL = os.environ.get("SERVED_MODEL_NAME", "vllm")
-MODEL_PATH = os.environ["MODEL_PATH"]
+MODEL_PATH = os.environ.get("MODEL_PATH", "deepseek-ai/DeepSeek-V4-Flash-0731")
+MODEL = os.environ.get("SERVED_MODEL_NAME", MODEL_PATH)
 TARGET_TOKENS = int(os.environ["TARGET_TOKENS"])
 EXTEND_TOKENS = int(os.environ.get("EXTEND_TOKENS", "0"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "64"))

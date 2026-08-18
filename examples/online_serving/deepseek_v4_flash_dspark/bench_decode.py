@@ -7,7 +7,7 @@ import time
 import urllib.request
 
 URL = os.environ.get("VLLM_URL", "http://127.0.0.1:8099/v1/completions")
-MODEL = os.environ.get("SERVED_MODEL_NAME", "vllm")
+MODEL = os.environ.get("SERVED_MODEL_NAME", "deepseek-ai/DeepSeek-V4-Flash-0731")
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "400"))
 
 PROMPTS = {
