@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
+VENV_PYTHON="${VENV_PYTHON:-${REPO_ROOT}/.venv/bin/python}"
+VLLM_BIN="${VLLM_BIN:-${REPO_ROOT}/.venv/bin/vllm}"
+LAYOUT="${1:-}"
+
+if [[ -z "${MODEL_PATH:-}" ]]; then
+  echo "Set MODEL_PATH to the DeepSeek-V4-Flash-0731 checkpoint." >&2
+  exit 2
+fi
+if [[ ! -x "${VENV_PYTHON}" || ! -x "${VLLM_BIN}" ]]; then
+  echo "Expected the vLLM environment at ${REPO_ROOT}/.venv" >&2
+  exit 2
+fi
+
+case "${LAYOUT}" in
+  tp4pp4)
+    TP=4
+    PP=4
+    PP_PARTITION="11,12,12,8"
+    DEFAULT_GPU_UTILIZATION="0.90"
+    ;;
+  tp8pp2)
+    TP=8
+    PP=2
+    PP_PARTITION="23,20"
+    DEFAULT_GPU_UTILIZATION="0.92"
+    ;;
+  *)
+    echo "Usage: MODEL_PATH=/path/to/model $0 {tp4pp4|tp8pp2}" >&2
+    exit 2
+    ;;
+esac
+
+gpu_count="$(nvidia-smi -L | wc -l)"
+if [[ "${gpu_count}" -ne 16 ]]; then
+  echo "Expected 16 visible GPUs before launch; found ${gpu_count}." >&2
+  exit 1
+fi
+
+bar1_count="$(nvidia-smi -q -d MEMORY | awk '
+  /BAR1 Memory Usage/ { in_bar1 = 1; next }
+  in_bar1 && /Total/ { if ($(NF - 1) + 0 >= 16000) good++; in_bar1 = 0 }
+  END { print good + 0 }
+')"
+if [[ "${bar1_count}" -ne 16 ]]; then
+  echo "Expected framebuffer-sized BAR1 on all 16 GPUs; found ${bar1_count}." >&2
+  exit 1
+fi
+
+site_packages="$(${VENV_PYTHON} - <<'PY'
+import sysconfig
+print(sysconfig.get_paths()["purelib"])
+PY
+)"
+export CUDA_HOME="${CUDA_HOME:-${site_packages}/nvidia/cu13}"
+export PATH="${CUDA_HOME}/bin:${PATH}"
+export FLASHINFER_CUDA_ARCH_LIST="${FLASHINFER_CUDA_ARCH_LIST:-12.0f}"
+
+"${VENV_PYTHON}" - <<'PY'
+from flashinfer.mla._sparse_mla_sm120 import _DECODE_DSV4_DISPATCH
+
+required = {(8, 192), (16, 192)}
+missing = required.difference(_DECODE_DSV4_DISPATCH)
+if missing:
+    raise SystemExit(
+        f"FlashInfer lacks required SM120 dispatch shapes {missing}; "
+        "run setup_flashinfer_sm120.sh"
+    )
+PY
+
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"
+export NCCL_P2P_LEVEL="${NCCL_P2P_LEVEL:-PXB}"
+export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
+export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
+export VLLM_PP_LAYER_PARTITION="${VLLM_PP_LAYER_PARTITION:-${PP_PARTITION}}"
+export VLLM_USE_V2_MODEL_RUNNER="${VLLM_USE_V2_MODEL_RUNNER:-1}"
+
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-${DEFAULT_GPU_UTILIZATION}}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-8}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-2048}"
+VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
+VLLM_PORT="${VLLM_PORT:-8099}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-vllm}"
+
+# EXTRA_VLLM_ARGS is intentionally word-split so operators can add ordinary
+# vLLM CLI switches without modifying this reproducibility script.
+# shellcheck disable=SC2206
+extra_args=(${EXTRA_VLLM_ARGS:-})
+
+exec "${VLLM_BIN}" serve "${MODEL_PATH}" \
+  --trust-remote-code \
+  --kv-cache-dtype fp8 \
+  --block-size 256 \
+  --pipeline-parallel-size "${PP}" \
+  --tensor-parallel-size "${TP}" \
+  --no-enable-flashinfer-autotune \
+  --tokenizer-mode deepseek_v4 \
+  --tool-call-parser deepseek_v4 \
+  --enable-auto-tool-choice \
+  --reasoning-parser deepseek_v4 \
+  --max-model-len "${MAX_MODEL_LEN}" \
+  --max-num-seqs "${MAX_NUM_SEQS}" \
+  --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}" \
+  --host "${VLLM_HOST}" \
+  --port "${VLLM_PORT}" \
+  --no-enable-prefix-caching \
+  --enable-chunked-prefill \
+  --served-model-name "${SERVED_MODEL_NAME}" \
+  --compilation-config '{"fast_moe_cold_start":false}' \
+  --distributed-executor-backend mp \
+  --load-format auto \
+  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+  --speculative-config '{"method":"dspark","num_speculative_tokens":5}' \
+  "${extra_args[@]}"

@@ -300,8 +300,10 @@ def _insert_context_kv(
 
 
 class DSparkDeepseekV4ForCausalLM(nn.Module):
-    # Draft weights ship in the target checkpoint (mtp.*) without embed/head, so
-    # load_dspark_model always aliases the target's.
+    # The checkpoint contains embed.weight. Under PP, the target embedding is on
+    # the first stage, so the complete drafter on the last stage retains its
+    # loaded TP-sharded copy. Without PP, load_dspark_model aliases the target's
+    # embedding and releases this duplicate.
     has_own_embed_tokens = False
     has_own_lm_head = False
     # Full-vocab draft: draft ids are target ids, no remapping needed.
@@ -388,8 +390,8 @@ class DSparkDeepseekV4ForCausalLM(nn.Module):
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         """Load the ``mtp.{0,1,2}.*`` draft weights from the target checkpoint.
 
-        Non-mtp weights (embed/head/main layers) belong to the target model and
-        are skipped here. ``embed_tokens``/``lm_head`` are aliased from the target.
+        The embedding is loaded for PP placement. ``lm_head`` is shared from the
+        target's last stage; other non-MTP target weights are skipped.
         """
         first_layer = self.model.layers[0]
         use_mega_moe = first_layer.ffn.use_mega_moe
@@ -430,6 +432,13 @@ class DSparkDeepseekV4ForCausalLM(nn.Module):
         head_end = n_local_head * (tp_rank + 1)
 
         for name, loaded_weight in weights:
+            if name == "embed.weight":
+                name = "model.embed_tokens.weight"
+                param = params_dict[name]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, loaded_weight)
+                loaded_params.add(name)
+                continue
             mapped = self._remap_dspark_name(name)
             if mapped is None:
                 continue

@@ -1140,6 +1140,9 @@ class SpeculativeConfig:
                         self.target_parallel_config, self.draft_tensor_parallel_size
                     )
                 )
+                if self.method == "dspark":
+                    # DSpark is instantiated only on the target's last PP stage.
+                    self.draft_parallel_config.pipeline_parallel_size = 1
 
         if self.method != "dspark" and self.enable_adaptive_verification:
             raise ValueError("Adaptive verification only supported with DSpark")

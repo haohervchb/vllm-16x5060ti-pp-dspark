@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import pytest
 import torch
 from torch import nn
 
 from vllm.model_executor.models.qwen3_dspark import DSparkMarkovHead
+from vllm.v1.worker.gpu.spec_decode.dspark.utils import _validate_pp_placement
 
 
 def _markov_head(weight: torch.Tensor) -> DSparkMarkovHead:
@@ -56,3 +58,20 @@ def test_gathered_markov_bias_matches_dense_at_full_vocab():
 
     expected = original + markov_embed @ weight.T * scale
     torch.testing.assert_close(result, expected)
+
+
+def test_dspark_pp_taps_fit_on_last_stage():
+    target = nn.Module()
+    target.start_layer = 36
+    target.end_layer = 43
+
+    _validate_pp_placement(target, (40, 41, 42))
+
+
+def test_dspark_pp_rejects_taps_outside_last_stage():
+    target = nn.Module()
+    target.start_layer = 37
+    target.end_layer = 42
+
+    with pytest.raises(RuntimeError, match=r"missing \[42\]"):
+        _validate_pp_placement(target, (40, 41, 42))
