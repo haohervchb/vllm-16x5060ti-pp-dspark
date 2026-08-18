@@ -82,10 +82,10 @@ MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731 \
   examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp8pp2
 ```
 
-The defaults reproduce the single-request baseline: 32,768 maximum model
-length, five DSpark tokens, FP8 KV cache, block size 256, CUDA graphs enabled,
-and prefix caching disabled. Production settings can be overridden, for
-example:
+The default `PROFILE=baseline` reproduces the single-request decode baseline:
+32,768 maximum model length, five DSpark tokens, FP8 KV cache, block size 256,
+CUDA graphs enabled, and prefix caching disabled. Production settings can be
+overridden, for example:
 
 ```bash
 MODEL_PATH=/path/to/model MAX_MODEL_LEN=32768 MAX_NUM_SEQS=8 \
@@ -97,6 +97,63 @@ Do not reduce TP8/PP2 to `gpu-memory-utilization=0.90` at 32K. The measured
 available KV memory was 1.18 GiB while one 32K request required 1.42 GiB. At
 `0.92`, initialization produced a 41,448-token cache and completed CUDA-graph
 capture.
+
+## Maximum-context profile
+
+The long-context profile is deliberately separate from the decode-throughput
+baseline:
+
+```bash
+MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731 PROFILE=context \
+  examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp4pp4
+```
+
+```bash
+MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731 PROFILE=context \
+  examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp8pp2
+```
+
+It enables prefix caching, sets `max-num-seqs=4`, keeps CUDA graphs enabled,
+uses five DSpark tokens, reserves exactly 1,500,000,000 bytes per GPU for KV
+cache, and reduces `max-num-batched-tokens` to 512. It also enables PyTorch
+expandable CUDA segments. `max-model-len=auto` then fits the model length to
+the explicit cache instead of relying on the less reproducible free-memory
+percentage.
+
+The 512-token prefill chunk is essential. DeepGEMM's sparse indexer creates a
+logits workspace proportional to both the prefill chunk and current context.
+At a 2,048-token chunk, a 260K TP4 prompt attempted a 470 MiB allocation and
+OOMed. At a 1,024-token chunk, a 780K prompt still OOMed. Halving the chunk to
+512 made a 1M TP4 prompt and a 480K TP8 prompt usable, while TP4's allocated KV
+cache covers the full native model window. A larger chunk can improve cold-
+prefill throughput, but its auto-fitted model length is not a usable-context
+guarantee.
+
+Measured capacity and real HTTP validation with this profile:
+
+| Layout | vLLM fitted limit | Validated request | Prefix-cache validation |
+|---|---:|---:|---:|
+| TP4/PP4 | 1,048,576 (native model cap) | 1,000,000 prompt + 64 output | 499,968 cached tokens |
+| TP8/PP2 | 502,784 | 480,000 prompt + 64 output | 249,856 cached tokens |
+
+TP4's 500K cold request ran at 4,703 prompt tok/s; extending the same prefix to
+1M completed in 237.30 seconds. TP8's 250K cold request ran at 3,700 prompt
+tok/s; extending it to 480K completed in 96.83 seconds. These are context
+capacity checks, not decode benchmarks. The TP4 target leaves 48,576 tokens
+below the architectural limit; TP8 leaves 22,784 tokens below its fitted
+limit for output and runtime margin.
+
+Reproduce both the cold and cached-extension checks against a live server:
+
+```bash
+MODEL_PATH=/path/to/model TARGET_TOKENS=500000 EXTEND_TOKENS=1000000 \
+  examples/online_serving/deepseek_v4_flash_dspark/bench_context.py
+```
+
+Use `TARGET_TOKENS=250000 EXTEND_TOKENS=480000` for TP8/PP2. The script sends
+exact token-ID prompts and streams 64 generated tokens. Confirm cache reuse
+from `/metrics`: `vllm:prefix_cache_hits_total` is rounded down to the last
+complete 256-token cache block.
 
 ## Measured single-request baseline
 
@@ -120,13 +177,36 @@ pipeline stages and relay latency consume most of the benefit when acceptance is
 low. Run `bench_decode.py` against a live server to measure the same three
 content classes on a new build.
 
+### Seven speculative tokens
+
+Seven-token DSpark was validated with CUDA graphs in both PP layouts. It is not
+the default because its benefit is acceptance-dependent:
+
+| Layout/workload | Five tokens | Seven tokens |
+|---|---:|---:|
+| TP8/PP2, mixed technical/prose/code | 120.6 tok/s | 116.0 tok/s mean |
+| TP8/PP2, 16K repeated continuation | 227.5 decode tok/s | 274.1 decode tok/s |
+| TP4/PP4, 16K repeated continuation | 94.4 decode tok/s | 135.6 decode tok/s |
+
+On TP8, seven tokens improved the high-acceptance 16K continuation by 20.5%
+but reduced the mixed aggregate by about 3.8%. Select it explicitly for a
+predictable high-acceptance workload:
+
+```bash
+MODEL_PATH=/path/to/model NUM_SPECULATIVE_TOKENS=7 \
+  examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp4pp4
+```
+
 ## Failure signatures
 
 - `missing [40, 41, 42]`: the last PP stage does not contain all DSpark target
   taps; correct `VLLM_PP_LAYER_PARTITION`.
-- KV-cache memory error during startup: raise `GPU_MEMORY_UTILIZATION` slightly
-  or lower `MAX_MODEL_LEN`. Do not disable CUDA graphs merely to hide an
-  incorrect memory plan.
+- KV-cache memory error during baseline startup: raise
+  `GPU_MEMORY_UTILIZATION` slightly or lower `MAX_MODEL_LEN`. For long context,
+  use explicit `KV_CACHE_MEMORY_BYTES` and lower `MAX_NUM_BATCHED_TOKENS`; an
+  auto-fit success alone does not account for the context-dependent sparse
+  indexer workspace. Do not disable CUDA graphs merely to hide an incorrect
+  memory plan.
 - Unsupported sparse-MLA dispatch at TP8: the pinned FlashInfer revision is not
   the package imported by `.venv/bin/python`; rerun the setup script.
 - Very low acceptance or corrupted output only with PP: verify the draft-token

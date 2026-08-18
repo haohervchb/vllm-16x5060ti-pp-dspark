@@ -78,14 +78,64 @@ export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 export VLLM_PP_LAYER_PARTITION="${VLLM_PP_LAYER_PARTITION:-${PP_PARTITION}}"
 export VLLM_USE_V2_MODEL_RUNNER="${VLLM_USE_V2_MODEL_RUNNER:-1}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-${DEFAULT_GPU_UTILIZATION}}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-8}"
-MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-2048}"
+PROFILE="${PROFILE:-baseline}"
+case "${PROFILE}" in
+  baseline)
+    DEFAULT_MAX_MODEL_LEN=32768
+    DEFAULT_MAX_NUM_SEQS=8
+    DEFAULT_MAX_NUM_BATCHED_TOKENS=2048
+    DEFAULT_PREFIX_CACHING=0
+    DEFAULT_KV_CACHE_MEMORY_BYTES=""
+    ;;
+  context)
+    DEFAULT_MAX_MODEL_LEN=auto
+    DEFAULT_MAX_NUM_SEQS=4
+    DEFAULT_MAX_NUM_BATCHED_TOKENS=512
+    DEFAULT_PREFIX_CACHING=1
+    DEFAULT_KV_CACHE_MEMORY_BYTES=1500000000
+    ;;
+  *)
+    echo "PROFILE must be 'baseline' or 'context'; got '${PROFILE}'." >&2
+    exit 2
+    ;;
+esac
+
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-${DEFAULT_MAX_MODEL_LEN}}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-${DEFAULT_MAX_NUM_SEQS}}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-${DEFAULT_MAX_NUM_BATCHED_TOKENS}}"
+ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-${DEFAULT_PREFIX_CACHING}}"
+KV_CACHE_MEMORY_BYTES="${KV_CACHE_MEMORY_BYTES:-${DEFAULT_KV_CACHE_MEMORY_BYTES}}"
+NUM_SPECULATIVE_TOKENS="${NUM_SPECULATIVE_TOKENS:-5}"
 VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
 VLLM_PORT="${VLLM_PORT:-8099}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-vllm}"
+
+if ! [[ "${NUM_SPECULATIVE_TOKENS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "NUM_SPECULATIVE_TOKENS must be a positive integer." >&2
+  exit 2
+fi
+if [[ "${ENABLE_PREFIX_CACHING}" == 1 ]]; then
+  prefix_caching_args=(--enable-prefix-caching)
+elif [[ "${ENABLE_PREFIX_CACHING}" == 0 ]]; then
+  prefix_caching_args=(--no-enable-prefix-caching)
+else
+  echo "ENABLE_PREFIX_CACHING must be 0 or 1." >&2
+  exit 2
+fi
+if [[ -n "${KV_CACHE_MEMORY_BYTES}" ]]; then
+  if ! [[ "${KV_CACHE_MEMORY_BYTES}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "KV_CACHE_MEMORY_BYTES must be a positive integer byte count." >&2
+    exit 2
+  fi
+  kv_cache_args=(--kv-cache-memory-bytes "${KV_CACHE_MEMORY_BYTES}")
+else
+  kv_cache_args=()
+fi
+speculative_config="$(printf '{"method":"dspark","num_speculative_tokens":%d}' \
+  "${NUM_SPECULATIVE_TOKENS}")"
 
 # EXTRA_VLLM_ARGS is intentionally word-split so operators can add ordinary
 # vLLM CLI switches without modifying this reproducibility script.
@@ -108,12 +158,13 @@ exec "${VLLM_BIN}" serve "${MODEL_PATH}" \
   --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}" \
   --host "${VLLM_HOST}" \
   --port "${VLLM_PORT}" \
-  --no-enable-prefix-caching \
+  "${prefix_caching_args[@]}" \
   --enable-chunked-prefill \
   --served-model-name "${SERVED_MODEL_NAME}" \
   --compilation-config '{"fast_moe_cold_start":false}' \
   --distributed-executor-backend mp \
   --load-format auto \
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
-  --speculative-config '{"method":"dspark","num_speculative_tokens":5}' \
+  --speculative-config "${speculative_config}" \
+  "${kv_cache_args[@]}" \
   "${extra_args[@]}"
