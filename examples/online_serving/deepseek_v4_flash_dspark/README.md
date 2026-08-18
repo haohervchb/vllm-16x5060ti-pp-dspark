@@ -225,6 +225,31 @@ roughly 80-90%, 55-75%, and 25-55% on successive stages. Redistributing target
 layers did not improve the fixed drafted-token rate, so the memory-safe layer
 partitions remain the defaults.
 
+### Target-only comparison at 131K context
+
+For an acceptance-independent comparison with a non-speculative vLLM server,
+DSpark was disabled and an exact 131,000-token prompt plus 400 generated tokens
+was sent with prefix caching enabled:
+
+| Layout | Cold prefill | Post-TTFT decode |
+|---|---:|---:|
+| TP8/PP2 | 5,559 tok/s | 91.7-92.2 tok/s |
+| TP4/PP4 | 8,944 tok/s | 64.6-64.9 tok/s cached; 71.2 tok/s cold |
+
+The throughput-test launch used these overrides with either layout:
+
+```bash
+PROFILE=context ENABLE_DSPARK=0 MAX_MODEL_LEN=131500 \
+  MAX_NUM_BATCHED_TOKENS=2048 KV_CACHE_MEMORY_BYTES=2000000000 \
+  examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp8pp2
+```
+
+The 2,048-token chunk is deliberately aggressive for prefill. At 131K it can
+emit recoverable allocator-retry warnings because the 2 GB KV reservation
+leaves little transient workspace. Use the context profile's default 512-token
+chunk for maximum-context operation; this command is the speed-comparison
+profile, not the maximum-capacity profile.
+
 The 16K TP8 continuation achieved 97.5% draft acceptance and is a best case.
 The TP8 mixed benchmark ranged from 94.9 to 154.3 tok/s as acceptance changed.
 On TP4/PP4, the same mixed benchmark ranged from 59.6 to 99.4 tok/s: the extra
