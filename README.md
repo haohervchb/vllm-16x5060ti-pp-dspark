@@ -77,6 +77,119 @@ Visit our [documentation](https://docs.vllm.ai/en/latest/) to learn more.
 - [Quickstart](https://docs.vllm.ai/en/latest/getting_started/quickstart.html)
 - [List of Supported Models](https://docs.vllm.ai/en/latest/models/supported_models.html)
 
+## Local DeepSeek-V4-Flash serving on 16 RTX 5060 Ti GPUs
+
+These commands serve the local `DeepSeek-V4-Flash-0731` snapshot with DSpark,
+prefix caching, CUDA graphs, and a maximum concurrency of four. They are the
+validated maximum-context configurations for this host. Install the required
+SM120 FlashInfer revision once before launching:
+
+```bash
+cd /home/rah/vllm-latest
+examples/online_serving/deepseek_v4_flash_dspark/setup_flashinfer_sm120.sh
+```
+
+The CUDA 13 toolkit selection below is required. `/usr/local/cuda-12.8/bin/nvcc`
+cannot compile FlashInfer's `compute_120f` target.
+
+### TP8/PP2
+
+This layout uses GPUs 0-7 for PP0 and GPUs 8-15 for PP1, keeping each TP group
+inside one PLX island. It fitted a 502,784-token context limit and was validated
+with a 480,000-token prompt plus 64 output tokens.
+
+```bash
+cd /home/rah/vllm-latest
+export CUDA_HOME="$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13"
+export PATH="$CUDA_HOME/bin:$PATH"
+export FLASHINFER_CUDA_ARCH_LIST=12.0f
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+export NCCL_P2P_LEVEL=PXB
+export NCCL_CUMEM_ENABLE=0
+export NCCL_SHM_DISABLE=0
+export VLLM_PP_LAYER_PARTITION=23,20
+export VLLM_USE_V2_MODEL_RUNNER=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+.venv/bin/vllm serve \
+  /home/rah/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4-Flash-0731/snapshots/7872f01b1d1fe23eabc4c98b48bffcef5a386062 \
+  --trust-remote-code \
+  --kv-cache-dtype fp8 \
+  --block-size 256 \
+  --pipeline-parallel-size 2 \
+  --tensor-parallel-size 8 \
+  --no-enable-flashinfer-autotune \
+  --tokenizer-mode deepseek_v4 \
+  --tool-call-parser deepseek_v4 \
+  --enable-auto-tool-choice \
+  --reasoning-parser deepseek_v4 \
+  --max-model-len auto \
+  --max-num-seqs 4 \
+  --max-num-batched-tokens 512 \
+  --host 0.0.0.0 \
+  --port 8099 \
+  --enable-prefix-caching \
+  --enable-chunked-prefill \
+  --served-model-name vllm \
+  --compilation-config '{"fast_moe_cold_start":false}' \
+  --distributed-executor-backend mp \
+  --load-format auto \
+  --gpu-memory-utilization 0.92 \
+  --kv-cache-memory-bytes 1500000000 \
+  --speculative-config '{"method":"dspark","num_speculative_tokens":5}'
+```
+
+### TP4/PP4
+
+This layout fitted the checkpoint's native 1,048,576-token context limit and
+was validated with a 1,000,000-token prompt plus 64 output tokens.
+
+```bash
+cd /home/rah/vllm-latest
+export CUDA_HOME="$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13"
+export PATH="$CUDA_HOME/bin:$PATH"
+export FLASHINFER_CUDA_ARCH_LIST=12.0f
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+export NCCL_P2P_LEVEL=PXB
+export NCCL_CUMEM_ENABLE=0
+export NCCL_SHM_DISABLE=0
+export VLLM_PP_LAYER_PARTITION=11,12,12,8
+export VLLM_USE_V2_MODEL_RUNNER=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+.venv/bin/vllm serve \
+  /home/rah/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4-Flash-0731/snapshots/7872f01b1d1fe23eabc4c98b48bffcef5a386062 \
+  --trust-remote-code \
+  --kv-cache-dtype fp8 \
+  --block-size 256 \
+  --pipeline-parallel-size 4 \
+  --tensor-parallel-size 4 \
+  --no-enable-flashinfer-autotune \
+  --tokenizer-mode deepseek_v4 \
+  --tool-call-parser deepseek_v4 \
+  --enable-auto-tool-choice \
+  --reasoning-parser deepseek_v4 \
+  --max-model-len auto \
+  --max-num-seqs 4 \
+  --max-num-batched-tokens 512 \
+  --host 0.0.0.0 \
+  --port 8099 \
+  --enable-prefix-caching \
+  --enable-chunked-prefill \
+  --served-model-name vllm \
+  --compilation-config '{"fast_moe_cold_start":false}' \
+  --distributed-executor-backend mp \
+  --load-format auto \
+  --gpu-memory-utilization 0.90 \
+  --kv-cache-memory-bytes 1500000000 \
+  --speculative-config '{"method":"dspark","num_speculative_tokens":5}'
+```
+
+Five speculative tokens gave the better mixed-workload result. For a
+predictable high-acceptance workload, change `num_speculative_tokens` to `7`.
+Implementation details, measured performance, and failure signatures are in
+[the local DeepSeek-V4 DSpark guide](examples/online_serving/deepseek_v4_flash_dspark/README.md).
+
 ## Contributing
 
 We welcome and value any contributions and collaborations.
