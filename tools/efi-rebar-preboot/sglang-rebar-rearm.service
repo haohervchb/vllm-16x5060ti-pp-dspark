@@ -1,0 +1,13 @@
+[Unit]
+Description=Arm automatic RTX 5060 Ti ReBAR configuration for the next boot
+Documentation=file:///usr/local/share/doc/sglang-rtx5060-rebar/README.md
+After=local-fs.target
+ConditionPathIsReadWrite=/boot/grub
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/grub-reboot rebar-preboot-auto
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Disable ACS redirect controls on the SGLang PLX GPU islands
+Documentation=file:///usr/local/share/doc/sglang-rtx5060-rebar/README.md
+After=local-fs.target
+Before=docker.service containerd.service nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sglang-configure-plx-acs --apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

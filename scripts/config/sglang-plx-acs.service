@@ -1,0 +1,14 @@
+[Unit]
+Description=Disable ACS redirect on PEX88048 bridges for local GPU P2P
+Documentation=file:///usr/local/share/doc/sglang-rtx5060-rebar/README.md
+After=local-fs.target
+Before=nvidia-persistenced.service
+ConditionPathExists=/sys/bus/pci/devices
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sglang-configure-plx-acs --apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

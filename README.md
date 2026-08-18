@@ -210,12 +210,14 @@ devices, drivers, containers, or workloads on this configuration.
 
 ### One-command persistent BAR1, MMIO, and ACS installation
 
-The companion setup source on this machine is in
-`/home/rah/sglang/tools/efi-rebar-preboot`. Starting from an Ubuntu install
-booted in UEFI mode, with its EFI System Partition mounted at `/boot/efi`:
+All setup sources are included in this repository. Starting from an Ubuntu
+install booted in UEFI mode, with its EFI System Partition mounted at
+`/boot/efi`:
 
 ```bash
-cd /home/rah/sglang
+git clone https://github.com/haohervchb/vllm-16x5060ti-pp-dspark.git \
+  ~/vllm-16x5060ti-pp-dspark
+cd ~/vllm-16x5060ti-pp-dspark
 sudo bash tools/efi-rebar-preboot/install-persistent.sh --install
 sudo reboot
 ```
@@ -258,7 +260,7 @@ Linux without power-cycling; the PCI change is volatile.
 After reboot, validate the persistent state:
 
 ```bash
-cd /home/rah/sglang
+cd ~/vllm-16x5060ti-pp-dspark
 sudo bash tools/efi-rebar-preboot/install-persistent.sh --check
 ```
 
@@ -276,7 +278,7 @@ A successful result has all of the following:
 payload-integrity probe once inside each PLX island:
 
 ```bash
-cd /home/rah/sglang
+cd ~/vllm-16x5060ti-pp-dspark
 nvcc -O2 -arch=sm_120 scripts/cuda_p2p_copy_probe.cu \
   -o /tmp/cuda_p2p_copy_probe
 CUDA_VISIBLE_DEVICES=0,1 /tmp/cuda_p2p_copy_probe 0 1
@@ -288,7 +290,7 @@ kernel copy and `cudaMemcpyPeer` data validation. Then exercise the actual
 TP8/PP2 NCCL grouping:
 
 ```bash
-cd /home/rah/sglang
+cd ~/vllm-16x5060ti-pp-dspark
 NCCL_CUMEM_ENABLE=0 NCCL_P2P_LEVEL=PXB \
   conda run --no-capture-output -n sglang-dev \
   torchrun --standalone --nproc-per-node=16 \
@@ -306,7 +308,7 @@ To remove the automatic EFI files, GRUB entries, services, kernel arguments,
 and NVIDIA module fragment installed by the persistent tool:
 
 ```bash
-cd /home/rah/sglang
+cd ~/vllm-16x5060ti-pp-dspark
 sudo bash tools/efi-rebar-preboot/install-persistent.sh --uninstall
 sudo reboot
 ```
@@ -323,7 +325,7 @@ validated maximum-context configurations for this host. Install the required
 SM120 FlashInfer revision once before launching:
 
 ```bash
-cd /home/rah/vllm-latest
+cd ~/vllm-16x5060ti-pp-dspark
 examples/online_serving/deepseek_v4_flash_dspark/setup_flashinfer_sm120.sh
 ```
 
@@ -337,7 +339,8 @@ inside one PLX island. It fitted a 502,784-token context limit and was validated
 with a 480,000-token prompt plus 64 output tokens.
 
 ```bash
-cd /home/rah/vllm-latest
+cd ~/vllm-16x5060ti-pp-dspark
+export MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731
 export CUDA_HOME="$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13"
 export PATH="$CUDA_HOME/bin:$PATH"
 export FLASHINFER_CUDA_ARCH_LIST=12.0f
@@ -350,7 +353,7 @@ export VLLM_USE_V2_MODEL_RUNNER=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 .venv/bin/vllm serve \
-  /home/rah/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4-Flash-0731/snapshots/7872f01b1d1fe23eabc4c98b48bffcef5a386062 \
+  "$MODEL_PATH" \
   --trust-remote-code \
   --kv-cache-dtype fp8 \
   --block-size 256 \
@@ -368,7 +371,6 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
   --port 8099 \
   --enable-prefix-caching \
   --enable-chunked-prefill \
-  --served-model-name vllm \
   --compilation-config '{"fast_moe_cold_start":false}' \
   --distributed-executor-backend mp \
   --load-format auto \
@@ -383,7 +385,8 @@ This layout fitted the checkpoint's native 1,048,576-token context limit and
 was validated with a 1,000,000-token prompt plus 64 output tokens.
 
 ```bash
-cd /home/rah/vllm-latest
+cd ~/vllm-16x5060ti-pp-dspark
+export MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731
 export CUDA_HOME="$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13"
 export PATH="$CUDA_HOME/bin:$PATH"
 export FLASHINFER_CUDA_ARCH_LIST=12.0f
@@ -396,7 +399,7 @@ export VLLM_USE_V2_MODEL_RUNNER=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 .venv/bin/vllm serve \
-  /home/rah/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4-Flash-0731/snapshots/7872f01b1d1fe23eabc4c98b48bffcef5a386062 \
+  "$MODEL_PATH" \
   --trust-remote-code \
   --kv-cache-dtype fp8 \
   --block-size 256 \
@@ -414,7 +417,6 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
   --port 8099 \
   --enable-prefix-caching \
   --enable-chunked-prefill \
-  --served-model-name vllm \
   --compilation-config '{"fast_moe_cold_start":false}' \
   --distributed-executor-backend mp \
   --load-format auto \
