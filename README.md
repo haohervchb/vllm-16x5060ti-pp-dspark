@@ -350,7 +350,9 @@ export NCCL_CUMEM_ENABLE=0
 export NCCL_SHM_DISABLE=0
 export VLLM_PP_LAYER_PARTITION=23,20
 export VLLM_USE_V2_MODEL_RUNNER=1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE=1
+export VLLM_CUSTOM_ALLREDUCE_ALGO=2stage
+export PYTORCH_CUDA_ALLOC_CONF=backend:native
 
 .venv/bin/vllm serve \
   "$MODEL_PATH" \
@@ -396,7 +398,9 @@ export NCCL_CUMEM_ENABLE=0
 export NCCL_SHM_DISABLE=0
 export VLLM_PP_LAYER_PARTITION=11,12,12,8
 export VLLM_USE_V2_MODEL_RUNNER=1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE=1
+export VLLM_CUSTOM_ALLREDUCE_ALGO=2stage
+export PYTORCH_CUDA_ALLOC_CONF=backend:native
 
 .venv/bin/vllm serve \
   "$MODEL_PATH" \

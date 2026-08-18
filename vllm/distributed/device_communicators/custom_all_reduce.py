@@ -176,13 +176,35 @@ class CustomAllreduce:
             physical_device_ids = [t.item() for t in gather_list]
             assert current_platform.is_cuda_alike()
             fully_connected = current_platform.is_fully_connected(physical_device_ids)
-        if same_node and world_size > 2 and not fully_connected:
+        forced_pcie_algo = envs.VLLM_CUSTOM_ALLREDUCE_ALGO
+        allow_pcie_custom_ar = envs.VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE and (
+            forced_pcie_algo
+        ) in (
+            "1stage",
+            "oneshot",
+            "2stage",
+            "twoshot",
+        )
+        if (
+            same_node
+            and world_size > 2
+            and not fully_connected
+            and not allow_pcie_custom_ar
+        ):
             logger.warning(
                 "Custom allreduce is disabled because it's not supported on"
                 " more than two PCIe-only GPUs. To silence this warning, "
                 "specify disable_custom_all_reduce=True explicitly."
             )
             return
+        if same_node and world_size > 2 and not fully_connected:
+            logger.warning(
+                "Forcing the vLLM %s custom all-reduce on %d PCIe GPUs. "
+                "This opt-in path requires working all-pairs P2P and must be "
+                "benchmarked on the exact PCIe topology.",
+                forced_pcie_algo,
+                world_size,
+            )
         # test P2P capability, this checks software/cudaruntime support
         # this is expensive to compute at the first time
         # then we cache the result
@@ -354,9 +376,14 @@ class CustomAllreduce:
             return False
         if not is_weak_contiguous(inp):
             return False
-        # for 4 or more non NVLink-capable GPUs, custom allreduce provides
-        # little performance improvement over NCCL.
-        if self.world_size == 2 or self.fully_connected:
+        # The explicit PCIe override is for unusual fully-P2P PCIe fabrics
+        # (for example, a group behind one PLX switch). The default remains
+        # disabled because ordinary multi-root PCIe groups are slower here.
+        if (
+            self.world_size == 2
+            or self.fully_connected
+            or envs.VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE
+        ):
             return inp_size < self.max_size
         return False
 
