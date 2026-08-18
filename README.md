@@ -315,22 +315,6 @@ This does not flash or restore motherboard firmware. The normal Ubuntu GRUB
 entry remains available if the EFI pass fails validation. Keep working BMC
 console access before changing firmware or PCI resource settings.
 
-### Optional fan control
-
-The local LACT helper can force cooling without overclocking:
-
-```bash
-sudo ~/configure_lact_gpu_fans.sh --apply 98
-~/configure_lact_gpu_fans.sh --check
-```
-
-If either clock offset is positive, the helper forces all configured fans to
-98%. Restore default clocks and NVIDIA automatic fan control with:
-
-```bash
-sudo ~/configure_lact_gpu_fans.sh --recover
-```
-
 ## Local DeepSeek-V4-Flash serving on 16 RTX 5060 Ti GPUs
 
 These commands serve the local `DeepSeek-V4-Flash-0731` snapshot with DSpark,
