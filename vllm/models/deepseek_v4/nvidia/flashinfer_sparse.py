@@ -567,7 +567,13 @@ class DeepseekV4FlashInferSM120Attention(DeepseekV4Attention):
 
     @classmethod
     def get_padded_num_q_heads(cls, num_heads: int) -> int:
-        return _pad_to_supported_q_heads(num_heads)
+        # FlashInfer exposes an SM120 DSV4 decode specialization for 8 heads,
+        # but its sparse-prefill dispatcher does not currently include the
+        # corresponding 8-head configuration.  TP8 therefore passes startup
+        # validation and then fails on the first prefill.  Pad to the same
+        # 16-head specialization used successfully by TP4; the outer DSV4
+        # attention wrapper slices the padded output back to n_local_heads.
+        return max(16, _pad_to_supported_q_heads(num_heads))
 
     def _o_proj(self, o: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         return deep_gemm_fp8_o_proj(

@@ -8,6 +8,7 @@ import torch
 
 from vllm.config import set_current_vllm_config
 from vllm.models.deepseek_v4.nvidia.flashinfer_sparse import (
+    DeepseekV4FlashInferSM120Attention,
     _required_sm120_sparse_topk,
 )
 from vllm.platforms.interface import DeviceCapability
@@ -85,3 +86,9 @@ def test_sm120_dsv4_required_topk_tracks_dspark_width() -> None:
 
     assert _required_sm120_sparse_topk(causal, 128) == 128
     assert _required_sm120_sparse_topk(dspark, 128) == 192
+
+
+def test_sm120_dsv4_pads_tp8_to_prefill_supported_heads() -> None:
+    assert DeepseekV4FlashInferSM120Attention.get_padded_num_q_heads(8) == 16
+    assert DeepseekV4FlashInferSM120Attention.get_padded_num_q_heads(16) == 16
+    assert DeepseekV4FlashInferSM120Attention.get_padded_num_q_heads(32) == 32
