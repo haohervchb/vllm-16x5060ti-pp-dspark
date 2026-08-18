@@ -77,6 +77,260 @@ Visit our [documentation](https://docs.vllm.ai/en/latest/) to learn more.
 - [Quickstart](https://docs.vllm.ai/en/latest/getting_started/quickstart.html)
 - [List of Supported Models](https://docs.vllm.ai/en/latest/models/supported_models.html)
 
+## Reproducing the 16-GPU ASRock Rack host
+
+This is the complete host configuration used for the DeepSeek-V4 measurements
+below. It was validated on 2026-08-18; it is intentionally specific to this
+machine rather than a generic multi-GPU recipe.
+
+| Component | Validated configuration |
+|---|---|
+| Motherboard | ASRock Rack `SPC621D8U-2T/OVH` |
+| GPU fabric | Two Broadcom/PLX PEX88096 islands, eight GPUs per island |
+| GPUs | 16 x RTX 5060 Ti 16 GB, PCI device `10de:2d04` |
+| OS | Ubuntu 22.04.5 LTS, UEFI boot |
+| Kernel | `6.8.0-106-generic` |
+| NVIDIA driver | Aikitoria patched open driver `610.43.02-p2p` |
+| Required BAR1 | 16,384 MiB on every GPU |
+
+The [ASRock Rack product/download page](https://www.asrockrack.com/general/productdetail.asp?Model=SPC621D8U-2T#Download)
+is the authoritative source for the generic board manual and firmware. This
+host uses the OVH-specific board/firmware variant, so do not assume that a
+generic ASRock image can safely replace its BIOS.
+
+### Exact topology
+
+The persistent preboot tool deliberately refuses to modify a different PCI
+layout. The verified addresses are:
+
+```text
+PLX island 0 / GPU indexes 0-7:
+  8f:00.0 92:00.0 93:00.0 94:00.0
+  95:00.0 98:00.0 9a:00.0 9b:00.0
+
+PLX island 1 / GPU indexes 8-15:
+  c8:00.0 cb:00.0 cc:00.0 cd:00.0
+  d1:00.0 d2:00.0 d3:00.0 d4:00.0
+```
+
+Each device must expose a **Physical Resizable BAR** capability for BAR1 whose
+supported-size list includes 16 GB:
+
+```bash
+sudo lspci -s 8f:00.0 -vv | grep -A3 -E 'Physical Resizable BAR'
+```
+
+Do not adapt the supplied EFI binary merely by changing the device count. Its
+safety checks, BDF list, PCI device ID, BAR number, and size-code validation
+are all part of the protection against modifying the wrong PCI function.
+
+### Firmware settings
+
+Boot into Setup and use these settings before installing Ubuntu-side support:
+
+- UEFI boot enabled; CSM disabled.
+- Secure Boot disabled. The locally built EFI application and patched NVIDIA
+  modules are unsigned.
+- Above 4G Decoding enabled.
+- MMIO High Granularity set to `1024G`.
+- MMIO High Base set around `56T`.
+- SR-IOV disabled on this machine.
+- Enable **Hot Plug Capable** on every populated CPU PCIe root/stack feeding a
+  PLX fabric when the option is exposed. In particular, physical slot/root 2
+  feeds Linux root port `89:02.0`; slot/root 10 feeds `c2:02.0`. “Slot 2” does
+  not mean GPU index 2.
+
+Hot-plug capability influences the firmware-provided bridge windows, but the
+final method also makes Linux reconstruct them. The validated prefetchable
+windows are 192 GiB at `89:02.0` and 512 GiB at `c2:02.0`.
+
+### Do not flash ReBarUEFI for this procedure
+
+The earlier bring-up included an OVH-specific BIOS experiment with ReBarDxe.
+That experiment is not required by the final reproducible solution. Do not
+flash the generic ASRock `P622U2T1.20` image, do not flash a 16 MiB BIOS-region
+dump as a complete 32 MiB SPI image, and do not use `flashrom` to write the
+running host's SMM-protected BIOS.
+
+The final solution is a standalone EFI application. It performs a read-only
+validation of all 16 GPUs, selects physical BAR1 size code 14 (16 GiB), clears
+the old BAR1 addresses, disables endpoint memory decoding, and returns to
+GRUB. Linux then allocates the BARs and upstream bridge windows. The EFI change
+is volatile: it does not rewrite motherboard firmware.
+
+### Install the patched NVIDIA driver
+
+Consumer Blackwell PCIe P2P on this system uses the
+[Aikitoria `610.43.02-p2p` branch](https://github.com/aikitoria/open-gpu-kernel-modules/tree/610.43.02-p2p).
+Its kernel modules must be paired with the userspace components and GSP
+firmware from the exact NVIDIA 610.43.02 release.
+
+```bash
+sudo apt-get install -y build-essential linux-headers-"$(uname -r)"
+
+mkdir -p ~/nvidia-610.43.02
+cd ~/nvidia-610.43.02
+curl -fLO \
+  https://download.nvidia.com/XFree86/Linux-x86_64/610.43.02/NVIDIA-Linux-x86_64-610.43.02.run
+echo '3034a054bb4cdf7752ff8dc272564cb105513804bff53538945901b16ca77463  NVIDIA-Linux-x86_64-610.43.02.run' \
+  | sha256sum -c -
+chmod +x NVIDIA-Linux-x86_64-610.43.02.run
+sudo ./NVIDIA-Linux-x86_64-610.43.02.run --no-kernel-modules
+
+cd ~
+git clone --branch 610.43.02-p2p \
+  https://github.com/aikitoria/open-gpu-kernel-modules.git
+cd ~/open-gpu-kernel-modules
+./install.sh
+sudo reboot
+```
+
+The patched modules are built for the running kernel. Rebuild/reinstall them
+after a kernel ABI change and before booting that new kernel. Verify the exact
+module version after reboot:
+
+```bash
+nvidia-smi --query-gpu=driver_version,name,pci.bus_id --format=csv,noheader
+modinfo nvidia | grep -E '^(filename|version|vermagic):'
+```
+
+Do not add `ForceP2P`, `RMPcieP2PType`, `RMForceP2PType`, or
+`RMForceStaticBar1` registry profiles. This patched branch already selects its
+P2P/BAR1 implementation, and experimental extra keys caused
+`NV_ERR_INVALID_REGISTRY_KEY` during GSP initialization. The only persistent
+module option used here is:
+
+```text
+options nvidia NVreg_EnableResizableBar=1
+```
+
+The tested Intel host disables IOMMU translation with `intel_iommu=off`.
+Disabling translation and ACS reduces device isolation; do not run untrusted
+devices, drivers, containers, or workloads on this configuration.
+
+### One-command persistent BAR1, MMIO, and ACS installation
+
+The companion setup source on this machine is in
+`/home/rah/sglang/tools/efi-rebar-preboot`. Starting from an Ubuntu install
+booted in UEFI mode, with its EFI System Partition mounted at `/boot/efi`:
+
+```bash
+cd /home/rah/sglang
+sudo bash tools/efi-rebar-preboot/install-persistent.sh --install
+sudo reboot
+```
+
+The installer first checks the exact 16 BDFs, `10de:2d04` device IDs, physical
+ReBAR capabilities, and at least 32 PEX bridge functions. It installs missing
+Ubuntu build dependencies only when necessary, then configures:
+
+- `/boot/efi/EFI/sglang/ReBarPrebootAuto.efi` for unattended boots;
+- `/boot/efi/EFI/sglang/ReBarPreboot.efi` for manual recovery/testing;
+- one-shot GRUB entries that run the EFI pass and then reload normal Ubuntu;
+- `intel_iommu=off pci=realloc=on,hpmmioprefsize=512G` in GRUB;
+- `NVreg_EnableResizableBar=1` for the NVIDIA module;
+- `sglang-rebar-rearm.service`, which arms the EFI pass for the next boot;
+- `sglang-plx-acs.service`, which clears volatile ACS redirect controls on all
+  supported PEX bridges after every boot.
+
+The automatic GRUB entry cannot loop: GRUB consumes its one-shot `next_entry`
+before chain-loading the EFI application. A successful Linux boot arms the
+next one-shot pass. If Linux never reaches the rearm service, the following
+boot falls back to the ordinary default entry.
+
+The 512 GiB hot-plug MMIO reservation is per upstream root and includes bridge
+alignment/headroom for eight 16 GiB BARs. It reserves address space, not 512
+GiB of physical RAM.
+
+For a manual, interactive preboot pass:
+
+```bash
+sudo grub-reboot rebar-preboot
+sudo reboot
+```
+
+The interactive tool changes nothing until all validation lines pass and the
+operator presses uppercase `A`. After it succeeds, return to GRUB and boot
+Linux without power-cycling; the PCI change is volatile.
+
+### Validate BAR1 and real P2P data movement
+
+After reboot, validate the persistent state:
+
+```bash
+cd /home/rah/sglang
+sudo bash tools/efi-rebar-preboot/install-persistent.sh --check
+```
+
+A successful result has all of the following:
+
+- exactly 16 RTX 5060 Ti devices;
+- `BAR1 16384 MiB` on every GPU;
+- 192 GiB and 512 GiB prefetchable windows at `89:02.0` and `c2:02.0`;
+- zero BAR resize/allocation, invalid registry-key, GSP reset, and P2P mailbox
+  errors for the current boot;
+- `ACSCtl 0000` on all 32 readable PEX bridge functions;
+- both persistence services enabled and active.
+
+`nvidia-smi topo -p2p` reports capability only. Compile and run the direct
+payload-integrity probe once inside each PLX island:
+
+```bash
+cd /home/rah/sglang
+nvcc -O2 -arch=sm_120 scripts/cuda_p2p_copy_probe.cu \
+  -o /tmp/cuda_p2p_copy_probe
+CUDA_VISIBLE_DEVICES=0,1 /tmp/cuda_p2p_copy_probe 0 1
+CUDA_VISIBLE_DEVICES=8,9 /tmp/cuda_p2p_copy_probe 0 1
+```
+
+Both runs must report bidirectional capability and `PASS` for both the peer
+kernel copy and `cudaMemcpyPeer` data validation. Then exercise the actual
+TP8/PP2 NCCL grouping:
+
+```bash
+cd /home/rah/sglang
+NCCL_CUMEM_ENABLE=0 NCCL_P2P_LEVEL=PXB \
+  conda run --no-capture-output -n sglang-dev \
+  torchrun --standalone --nproc-per-node=16 \
+  scripts/nccl_tp8_pp2_probe.py
+```
+
+The verified host measured approximately 7.29 GB/s TP8 all-reduce algorithm
+bandwidth per island and passed all 16 ranks. `NCCL_P2P_LEVEL=PXB` keeps direct
+P2P inside GPUs 0-7 and 8-15 while the cross-island PP pairs use shared-memory
+host staging. Do not globally set `NCCL_P2P_DISABLE=1` for TP8/PP2.
+
+### Removal and recovery
+
+To remove the automatic EFI files, GRUB entries, services, kernel arguments,
+and NVIDIA module fragment installed by the persistent tool:
+
+```bash
+cd /home/rah/sglang
+sudo bash tools/efi-rebar-preboot/install-persistent.sh --uninstall
+sudo reboot
+```
+
+This does not flash or restore motherboard firmware. The normal Ubuntu GRUB
+entry remains available if the EFI pass fails validation. Keep working BMC
+console access before changing firmware or PCI resource settings.
+
+### Optional fan control
+
+The local LACT helper can force cooling without overclocking:
+
+```bash
+sudo ~/configure_lact_gpu_fans.sh --apply 98
+~/configure_lact_gpu_fans.sh --check
+```
+
+If either clock offset is positive, the helper forces all configured fans to
+98%. Restore default clocks and NVIDIA automatic fan control with:
+
+```bash
+sudo ~/configure_lact_gpu_fans.sh --recover
+```
+
 ## Local DeepSeek-V4-Flash serving on 16 RTX 5060 Ti GPUs
 
 These commands serve the local `DeepSeek-V4-Flash-0731` snapshot with DSpark,
