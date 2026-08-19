@@ -11,7 +11,7 @@ command -v uv >/dev/null 2>&1 || {
 
 # A fresh clone may inherit CUDA_HOME from an older deleted .venv. Never let
 # setuptools probe a path that does not exist during bootstrap.
-unset CUDA_HOME CUDACXX
+unset CUDA_HOME CUDACXX CUDA_PATH
 
 if [[ ! -x .venv/bin/python ]]; then
   uv venv .venv --python 3.12
@@ -29,12 +29,28 @@ print(sysconfig.get_paths()["purelib"])
 PY
 )
 export CUDA_HOME="$site_packages/nvidia/cu13"
+export CUDA_PATH="$CUDA_HOME"
 export CUDACXX="$CUDA_HOME/bin/nvcc"
 export PATH="$CUDA_HOME/bin:$PATH"
-export LD_LIBRARY_PATH="$CUDA_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# NVIDIA's pip CUDA toolkit puts headers/bin under nvidia/cu13, but shared
+# libraries live in sibling nvidia/*/lib directories. CMake's FindCUDA expects
+# a conventional toolkit root, so expose those libraries under CUDA_HOME/lib64.
+mkdir -p "$CUDA_HOME/lib64"
+while IFS= read -r lib; do
+  ln -sf "$lib" "$CUDA_HOME/lib64/$(basename "$lib")"
+done < <(find "$site_packages/nvidia" -mindepth 2 -maxdepth 3 -type f -path '*/lib/lib*.so*' -print)
+
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export CMAKE_PREFIX_PATH="$CUDA_HOME${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
 
 if [[ ! -x "$CUDA_HOME/bin/nvcc" ]]; then
   echo "error: CUDA bootstrap did not provide $CUDA_HOME/bin/nvcc" >&2
+  exit 1
+fi
+if ! compgen -G "$CUDA_HOME/lib64/libcudart.so*" >/dev/null; then
+  echo "error: CUDA bootstrap did not expose libcudart under $CUDA_HOME/lib64" >&2
+  find "$site_packages/nvidia" -name 'libcudart.so*' -print >&2 || true
   exit 1
 fi
 
