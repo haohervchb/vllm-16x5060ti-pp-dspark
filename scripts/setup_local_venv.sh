@@ -47,17 +47,23 @@ fi
 # FindCUDA and modern FindCUDAToolkit can discover the installed components.
 mkdir -p "$CUDA_HOME/lib" "$CUDA_HOME/lib64" "$CUDA_HOME/include"
 
+link_cuda_file() {
+  local src=$1 dst=$2
+  [[ "$src" == "$dst" ]] && return 0
+  ln -sf "$src" "$dst"
+}
+
 while IFS= read -r lib; do
   base=$(basename "$lib")
-  ln -sf "$lib" "$CUDA_HOME/lib/$base"
-  ln -sf "$lib" "$CUDA_HOME/lib64/$base"
+  link_cuda_file "$lib" "$CUDA_HOME/lib/$base"
+  link_cuda_file "$lib" "$CUDA_HOME/lib64/$base"
 
   # Python CUDA wheels may only ship SONAME files (e.g. libcudart.so.13).
   # find_library(NAMES cudart) looks for the unversioned linker name.
   if [[ "$base" =~ ^(lib.+\.so)\.[0-9].*$ ]]; then
     linker_name=${BASH_REMATCH[1]}
-    ln -sf "$lib" "$CUDA_HOME/lib/$linker_name"
-    ln -sf "$lib" "$CUDA_HOME/lib64/$linker_name"
+    link_cuda_file "$lib" "$CUDA_HOME/lib/$linker_name"
+    link_cuda_file "$lib" "$CUDA_HOME/lib64/$linker_name"
   fi
 done < <(find "$site_packages/nvidia" -type f \
   \( -path '*/lib/lib*.so*' -o -path '*/lib/lib*.a' \) -print)
@@ -69,7 +75,7 @@ while IFS= read -r header; do
   esac
   rel=${header#*/include/}
   mkdir -p "$CUDA_HOME/include/$(dirname "$rel")"
-  ln -sf "$header" "$CUDA_HOME/include/$rel"
+  link_cuda_file "$header" "$CUDA_HOME/include/$rel"
 done < <(find "$site_packages/nvidia" -type f -path '*/include/*' -print)
 
 cudart="$CUDA_HOME/lib64/libcudart.so"
