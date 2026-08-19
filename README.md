@@ -156,7 +156,8 @@ The final solution is a standalone EFI application. It performs a read-only
 validation of all 16 GPUs, selects physical BAR1 size code 14 (16 GiB), clears
 the old BAR1 addresses, disables endpoint memory decoding, and returns to
 GRUB. Linux then allocates the BARs and upstream bridge windows. The EFI change
-is volatile: it does not rewrite motherboard firmware.
+is volatile: it does not rewrite motherboard firmware, so the automatic EFI
+pass must run before every Linux boot.
 
 ### Install the patched NVIDIA driver
 
@@ -210,9 +211,12 @@ devices, drivers, containers, or workloads on this configuration.
 
 ### One-command persistent BAR1, MMIO, and ACS installation
 
-All setup sources are included in this repository. Starting from an Ubuntu
-install booted in UEFI mode, with its EFI System Partition mounted at
-`/boot/efi`:
+**This is an install-once configuration. There is no interactive ReBAR EFI
+program and no uppercase-`A` prompt in the persistent path.** Every reboot runs
+the automatic EFI helper before Ubuntu, applies BAR1 = 16 GiB after validating
+the exact hardware, then continues into the ordinary Ubuntu GRUB configuration.
+
+For a fresh clone:
 
 ```bash
 git clone https://github.com/haohervchb/vllm-16x5060ti-pp-dspark.git \
@@ -222,42 +226,50 @@ sudo bash tools/efi-rebar-preboot/install-persistent.sh --install
 sudo reboot
 ```
 
-The installer first checks the exact 16 BDFs, `10de:2d04` device IDs, physical
-ReBAR capabilities, and at least 32 PEX bridge functions. It installs missing
-Ubuntu build dependencies only when necessary, then configures:
+For an existing clone, update it first so an older interactive implementation
+cannot be reinstalled accidentally:
 
-- `/boot/efi/EFI/sglang/ReBarPrebootAuto.efi` for unattended boots;
-- `/boot/efi/EFI/sglang/ReBarPreboot.efi` for manual recovery/testing;
-- one-shot GRUB entries that run the EFI pass and then reload normal Ubuntu;
+```bash
+cd ~/vllm-16x5060ti-pp-dspark
+git fetch origin
+git switch main
+git pull --ff-only origin main
+sudo bash tools/efi-rebar-preboot/install-persistent.sh --install
+sudo reboot
+```
+
+The installer first checks the exact 16 BDFs, `10de:2d04` device IDs, physical
+ReBAR capabilities, and at least 32 PEX bridge functions. It removes legacy
+interactive ReBAR files before configuring:
+
+- `/boot/efi/EFI/sglang/ReBarPrebootAuto.efi` as the **only** installed ReBAR
+  EFI application;
+- `/etc/grub.d/41_sglang_rebar_auto` as the automatic one-shot GRUB entry;
 - `intel_iommu=off pci=realloc=on,hpmmioprefsize=512G` in GRUB;
 - `NVreg_EnableResizableBar=1` for the NVIDIA module;
-- `sglang-rebar-rearm.service`, which arms the EFI pass for the next boot;
+- `sglang-rebar-rearm.service`, which arms the automatic EFI pass for the next
+  reboot after each successful Ubuntu boot;
 - `sglang-plx-acs.service`, which clears volatile ACS redirect controls on all
   supported PEX bridges after every boot.
 
-The automatic GRUB entry cannot loop: GRUB consumes its one-shot `next_entry`
-before chain-loading the EFI application. A successful Linux boot arms the
-next one-shot pass. If Linux never reaches the rearm service, the following
-boot falls back to the ordinary default entry.
+The installer explicitly removes the old `/etc/grub.d/09_sglang_rebar` and
+`/boot/efi/EFI/sglang/ReBarPreboot.efi` interactive path. Do not recreate or
+manually select an old `rebar-preboot` entry.
+
+The automatic entry is guarded against recursive selection. After the EFI
+helper returns, it clears stale ReBAR `saved_entry`/`next_entry` state, forces
+the ordinary first GRUB entry, and reloads the normal Ubuntu configuration.
+The rearm service uses GRUB one-shot state only; if Ubuntu never reaches that
+service, a subsequent boot falls back to the ordinary default instead of
+permanently selecting the helper.
 
 The 512 GiB hot-plug MMIO reservation is per upstream root and includes bridge
 alignment/headroom for eight 16 GiB BARs. It reserves address space, not 512
 GiB of physical RAM.
 
-For a manual, interactive preboot pass:
-
-```bash
-sudo grub-reboot rebar-preboot
-sudo reboot
-```
-
-The interactive tool changes nothing until all validation lines pass and the
-operator presses uppercase `A`. After it succeeds, return to GRUB and boot
-Linux without power-cycling; the PCI change is volatile.
-
 ### Validate BAR1 and real P2P data movement
 
-After reboot, validate the persistent state:
+After the first reboot, validate the persistent state:
 
 ```bash
 cd ~/vllm-16x5060ti-pp-dspark
@@ -268,11 +280,12 @@ A successful result has all of the following:
 
 - exactly 16 RTX 5060 Ti devices;
 - `BAR1 16384 MiB` on every GPU;
+- `/boot/efi/EFI/sglang/ReBarPreboot.efi` reported absent;
+- `sglang-rebar-rearm.service` and `sglang-plx-acs.service` enabled;
 - 192 GiB and 512 GiB prefetchable windows at `89:02.0` and `c2:02.0`;
 - zero BAR resize/allocation, invalid registry-key, GSP reset, and P2P mailbox
   errors for the current boot;
-- `ACSCtl 0000` on all 32 readable PEX bridge functions;
-- both persistence services enabled and active.
+- `ACSCtl 0000` on all 32 readable PEX bridge functions.
 
 `nvidia-smi topo -p2p` reports capability only. Compile and run the direct
 payload-integrity probe once inside each PLX island:
@@ -304,8 +317,7 @@ host staging. Do not globally set `NCCL_P2P_DISABLE=1` for TP8/PP2.
 
 ### Removal and recovery
 
-To remove the automatic EFI files, GRUB entries, services, kernel arguments,
-and NVIDIA module fragment installed by the persistent tool:
+To remove everything installed by the persistent tool:
 
 ```bash
 cd ~/vllm-16x5060ti-pp-dspark
@@ -313,9 +325,22 @@ sudo bash tools/efi-rebar-preboot/install-persistent.sh --uninstall
 sudo reboot
 ```
 
-This does not flash or restore motherboard firmware. The normal Ubuntu GRUB
-entry remains available if the EFI pass fails validation. Keep working BMC
-console access before changing firmware or PCI resource settings.
+If a machine ever reaches a GRUB command line instead of Ubuntu, **do not load
+or select a legacy interactive `rebar-preboot` entry**. Boot the normal Ubuntu
+kernel directly or select the normal Ubuntu menu entry, then disable recovery
+state from Linux with:
+
+```bash
+sudo systemctl disable --now sglang-rebar-rearm.service || true
+sudo systemctl mask sglang-rebar-rearm.service || true
+sudo grub-editenv /boot/grub/grubenv unset next_entry || true
+sudo grub-editenv /boot/grub/grubenv unset saved_entry || true
+sudo rm -f /etc/grub.d/09_sglang_rebar /etc/grub.d/41_sglang_rebar_auto
+sudo update-grub
+```
+
+This procedure never flashes or restores motherboard firmware. Keep working
+BMC/console access when changing firmware or PCI resource settings.
 
 ## Local DeepSeek-V4-Flash serving on 16 RTX 5060 Ti GPUs
 
