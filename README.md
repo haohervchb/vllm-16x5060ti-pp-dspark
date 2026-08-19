@@ -375,7 +375,9 @@ export NCCL_CUMEM_ENABLE=0
 export NCCL_SHM_DISABLE=0
 export VLLM_PP_LAYER_PARTITION=23,20
 export VLLM_USE_V2_MODEL_RUNNER=1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE=1
+export VLLM_CUSTOM_ALLREDUCE_ALGO=2stage
+export PYTORCH_CUDA_ALLOC_CONF=backend:native
 
 .venv/bin/vllm serve \
   "$MODEL_PATH" \
@@ -421,7 +423,9 @@ export NCCL_CUMEM_ENABLE=0
 export NCCL_SHM_DISABLE=0
 export VLLM_PP_LAYER_PARTITION=11,12,12,8
 export VLLM_USE_V2_MODEL_RUNNER=1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE=1
+export VLLM_CUSTOM_ALLREDUCE_ALGO=2stage
+export PYTORCH_CUDA_ALLOC_CONF=backend:native
 
 .venv/bin/vllm serve \
   "$MODEL_PATH" \
@@ -452,6 +456,10 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 Five speculative tokens gave the better mixed-workload result. For a
 predictable high-acceptance workload, change `num_speculative_tokens` to `7`.
+The optimized five-token mixed benchmark measured 161-164 tok/s at TP8/PP2 and
+92.7-93.0 tok/s at TP4/PP4. With DSpark disabled at a real 131K context, TP8/PP2
+measured 5,559 tok/s prefill and about 92 tok/s decode; TP4/PP4 measured 8,944
+tok/s prefill and about 65 tok/s steady decode.
 Implementation details, measured performance, and failure signatures are in
 [the local DeepSeek-V4 DSpark guide](examples/online_serving/deepseek_v4_flash_dspark/README.md).
 

@@ -259,6 +259,10 @@ if TYPE_CHECKING:
     VLLM_ROCM_FP8_MFMA_PAGE_ATTN: bool = False
     VLLM_ALLREDUCE_USE_SYMM_MEM: bool = True
     VLLM_ALLREDUCE_USE_FLASHINFER: bool = False
+    VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE: bool = False
+    VLLM_CUSTOM_ALLREDUCE_ALGO: (
+        Literal["1stage", "oneshot", "2stage", "twoshot"] | None
+    ) = None
     VLLM_TUNED_CONFIG_FOLDER: str | None = None
     VLLM_ENABLE_STARTUP_PLAN: bool = False
     VLLM_GPT_OSS_SYSTEM_TOOL_MCP_LABELS: set[str] = set()
@@ -1858,6 +1862,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ALLREDUCE_USE_FLASHINFER": lambda: bool(
         int(os.getenv("VLLM_ALLREDUCE_USE_FLASHINFER", "0"))
     ),
+    # Opt into vLLM's custom all-reduce on a validated, fully-P2P PCIe group.
+    "VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE": lambda: bool(
+        int(os.getenv("VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE", "0"))
+    ),
+    "VLLM_CUSTOM_ALLREDUCE_ALGO": lambda: os.getenv("VLLM_CUSTOM_ALLREDUCE_ALGO", None),
     # Experimental: use this to enable MCP tool calling for non harmony models
     "VLLM_USE_EXPERIMENTAL_PARSER_CONTEXT": lambda: bool(
         int(os.getenv("VLLM_USE_EXPERIMENTAL_PARSER_CONTEXT", "0"))
