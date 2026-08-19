@@ -97,6 +97,47 @@ available KV memory was 1.18 GiB while one 32K request required 1.42 GiB. At
 `0.92`, initialization produced a 41,448-token cache and completed CUDA-graph
 capture.
 
+## PLX custom all-reduce
+
+The launcher enables this fork's opt-in two-stage custom all-reduce for every
+TP group. Upstream vLLM normally disables its custom kernel on more than two
+PCIe-only GPUs. That default is sensible for ordinary multi-root PCIe systems,
+but it leaves performance on the table here: every TP4 or TP8 group is confined
+to one PLX island with working all-pairs P2P and framebuffer-sized BAR1.
+
+The exact launch settings are:
+
+```bash
+export VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE=1
+export VLLM_CUSTOM_ALLREDUCE_ALGO=2stage
+export PYTORCH_CUDA_ALLOC_CONF=backend:native
+```
+
+The native allocator is mandatory for CUDA-graph IPC registration. Do not use
+`expandable_segments:True` or `backend:cudaMallocAsync` with this path. Disable
+the optimization for an A/B or an unvalidated topology with:
+
+```bash
+ENABLE_PLX_CUSTOM_ALLREDUCE=0 \
+  examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp8pp2
+```
+
+Validate all groups after changing the GPU order, driver, firmware, or PLX
+configuration. This exercises exact eager and CUDA-graph reductions repeatedly:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+  .venv/bin/torchrun --standalone --nproc-per-node=8 \
+  scripts/validate_plx_custom_allreduce.py --ops-per-graph 20
+
+CUDA_VISIBLE_DEVICES=8,9,10,11,12,13,14,15 \
+  .venv/bin/torchrun --standalone --nproc-per-node=8 \
+  scripts/validate_plx_custom_allreduce.py --ops-per-graph 20
+```
+
+On this host, a 6-by-8192 BF16 reduction took 0.022 ms at TP8 versus 0.041 ms
+through PyNCCL (1.89x), and 0.019 ms at TP4 versus 0.029 ms (1.49x).
+
 ## Maximum-context profile
 
 The long-context profile is deliberately separate from the decode-throughput
@@ -114,10 +155,10 @@ PROFILE=context \
 
 It enables prefix caching, sets `max-num-seqs=4`, keeps CUDA graphs enabled,
 uses five DSpark tokens, reserves exactly 1,500,000,000 bytes per GPU for KV
-cache, and reduces `max-num-batched-tokens` to 512. It also enables PyTorch
-expandable CUDA segments. `max-model-len=auto` then fits the model length to
-the explicit cache instead of relying on the less reproducible free-memory
-percentage.
+cache, and reduces `max-num-batched-tokens` to 512. It keeps PyTorch's native
+allocator so custom all-reduce can register CUDA-graph buffers. `max-model-len`
+`auto` then fits the model length to the explicit cache instead of relying on
+the less reproducible free-memory percentage.
 
 The 512-token prefill chunk is essential. DeepGEMM's sparse indexer creates a
 logits workspace proportional to both the prefill chunk and current context.
@@ -168,6 +209,46 @@ high-acceptance continuation alone.
 | TP8/PP2, high-acceptance continuation, 512 output tokens | 130-146 tok/s |
 | TP8/PP2, mixed technical/prose/code, 400 tokens each | 120.6 tok/s aggregate |
 | TP8/PP2, 16K repeated technical context | 227.5 decode tok/s, 6,388 prompt tok/s |
+
+With five DSpark tokens, a controlled PLX custom-all-reduce A/B raised the
+mixed 800-token-per-workload TP8/PP2 run from 136.5 to 153-159 tok/s. TP4/PP4
+rose from about 69 to 86.7 tok/s. Without speculative decoding, TP8/PP2 rose
+from 78-79 to 91.6 tok/s. With the final baseline launch defaults, two repeats
+measured 161.2 and 163.5 tok/s at TP8/PP2, and 92.7 and 93.0 tok/s at TP4/PP4.
+These are end-to-end HTTP results, not isolated collective timings.
+
+Power draw is not a useful saturation target for this single-request workload.
+During the final TP8 run, the GPUs reported roughly 80-90% SM activity and
+2.75-2.85 GHz core clocks while drawing only about 54-69 W each. TP4 showed the
+expected PP imbalance: the first stage was around 93-96% SM utilization, then
+roughly 80-90%, 55-75%, and 25-55% on successive stages. Redistributing target
+layers did not improve the fixed drafted-token rate, so the memory-safe layer
+partitions remain the defaults.
+
+### Target-only comparison at 131K context
+
+For an acceptance-independent comparison with a non-speculative vLLM server,
+DSpark was disabled and an exact 131,000-token prompt plus 400 generated tokens
+was sent with prefix caching enabled:
+
+| Layout | Cold prefill | Post-TTFT decode |
+|---|---:|---:|
+| TP8/PP2 | 5,559 tok/s | 91.7-92.2 tok/s |
+| TP4/PP4 | 8,944 tok/s | 64.6-64.9 tok/s cached; 71.2 tok/s cold |
+
+The throughput-test launch used these overrides with either layout:
+
+```bash
+PROFILE=context ENABLE_DSPARK=0 MAX_MODEL_LEN=131500 \
+  MAX_NUM_BATCHED_TOKENS=2048 KV_CACHE_MEMORY_BYTES=2000000000 \
+  examples/online_serving/deepseek_v4_flash_dspark/serve.sh tp8pp2
+```
+
+The 2,048-token chunk is deliberately aggressive for prefill. At 131K it can
+emit recoverable allocator-retry warnings because the 2 GB KV reservation
+leaves little transient workspace. Use the context profile's default 512-token
+chunk for maximum-context operation; this command is the speed-comparison
+profile, not the maximum-capacity profile.
 
 The 16K TP8 continuation achieved 97.5% draft acceptance and is a best case.
 The TP8 mixed benchmark ranged from 94.9 to 154.3 tok/s as acceptance changed.
