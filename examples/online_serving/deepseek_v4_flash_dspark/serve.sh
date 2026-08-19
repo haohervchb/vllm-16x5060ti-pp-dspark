@@ -75,7 +75,22 @@ export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 export VLLM_PP_LAYER_PARTITION="${VLLM_PP_LAYER_PARTITION:-${PP_PARTITION}}"
 export VLLM_USE_V2_MODEL_RUNNER="${VLLM_USE_V2_MODEL_RUNNER:-1}"
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
+ENABLE_PLX_CUSTOM_ALLREDUCE="${ENABLE_PLX_CUSTOM_ALLREDUCE:-1}"
+if [[ "${ENABLE_PLX_CUSTOM_ALLREDUCE}" == 1 ]]; then
+  export VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE=1
+  export VLLM_CUSTOM_ALLREDUCE_ALGO="${VLLM_CUSTOM_ALLREDUCE_ALGO:-2stage}"
+  # cudaMalloc IPC registration used by custom all-reduce graph capture is not
+  # compatible with expandable segments or cudaMallocAsync.
+  export PYTORCH_CUDA_ALLOC_CONF=backend:native
+elif [[ "${ENABLE_PLX_CUSTOM_ALLREDUCE}" == 0 ]]; then
+  export VLLM_ALLOW_PCI_CUSTOM_ALLREDUCE=0
+  unset VLLM_CUSTOM_ALLREDUCE_ALGO
+  export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+else
+  echo "ENABLE_PLX_CUSTOM_ALLREDUCE must be 0 or 1." >&2
+  exit 2
+fi
 
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-${DEFAULT_GPU_UTILIZATION}}"
 PROFILE="${PROFILE:-baseline}"
@@ -106,11 +121,22 @@ MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-${DEFAULT_MAX_NUM_BATCHED_TOKE
 ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-${DEFAULT_PREFIX_CACHING}}"
 KV_CACHE_MEMORY_BYTES="${KV_CACHE_MEMORY_BYTES:-${DEFAULT_KV_CACHE_MEMORY_BYTES}}"
 NUM_SPECULATIVE_TOKENS="${NUM_SPECULATIVE_TOKENS:-5}"
+ENABLE_DSPARK="${ENABLE_DSPARK:-1}"
 VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
 VLLM_PORT="${VLLM_PORT:-8099}"
 
-if ! [[ "${NUM_SPECULATIVE_TOKENS}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "NUM_SPECULATIVE_TOKENS must be a positive integer." >&2
+if [[ "${ENABLE_DSPARK}" == 1 ]]; then
+  if ! [[ "${NUM_SPECULATIVE_TOKENS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "NUM_SPECULATIVE_TOKENS must be a positive integer." >&2
+    exit 2
+  fi
+  speculative_config="$(printf '{"method":"dspark","num_speculative_tokens":%d}' \
+    "${NUM_SPECULATIVE_TOKENS}")"
+  speculative_args=(--speculative-config "${speculative_config}")
+elif [[ "${ENABLE_DSPARK}" == 0 ]]; then
+  speculative_args=()
+else
+  echo "ENABLE_DSPARK must be 0 or 1." >&2
   exit 2
 fi
 if [[ "${ENABLE_PREFIX_CACHING}" == 1 ]]; then
@@ -130,9 +156,6 @@ if [[ -n "${KV_CACHE_MEMORY_BYTES}" ]]; then
 else
   kv_cache_args=()
 fi
-speculative_config="$(printf '{"method":"dspark","num_speculative_tokens":%d}' \
-  "${NUM_SPECULATIVE_TOKENS}")"
-
 # EXTRA_VLLM_ARGS is intentionally word-split so operators can add ordinary
 # vLLM CLI switches without modifying this reproducibility script.
 # shellcheck disable=SC2206
@@ -160,6 +183,6 @@ exec "${VLLM_BIN}" serve "${MODEL_PATH}" \
   --distributed-executor-backend mp \
   --load-format auto \
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
-  --speculative-config "${speculative_config}" \
+  "${speculative_args[@]}" \
   "${kv_cache_args[@]}" \
   "${extra_args[@]}"
