@@ -44,6 +44,20 @@ require_root() {
   fi
 }
 
+clear_rebar_grub_state() {
+  # Never leave either ReBAR entry as a saved/default GRUB choice. The EFI
+  # helper returns to GRUB, so a persistent ReBAR saved_entry can recurse back
+  # into the helper instead of reaching Ubuntu.
+  local saved
+  saved=$(grub-editenv list 2>/dev/null | awk -F= '$1 == "saved_entry" {print $2}')
+  case "$saved" in
+    rebar-preboot|rebar-preboot-auto)
+      grub-editenv /boot/grub/grubenv unset saved_entry || true
+      ;;
+  esac
+  grub-editenv /boot/grub/grubenv unset next_entry 2>/dev/null || true
+}
+
 install_dependencies() {
   local packages=()
 
@@ -113,6 +127,7 @@ install_configuration() {
 
   install_dependencies
   verify_platform
+  clear_rebar_grub_state
 
   esp_uuid=$(findmnt -n -o UUID /boot/efi)
   if [[ -z "$esp_uuid" ]]; then
@@ -137,19 +152,21 @@ install_configuration() {
   install -D -m 0644 "$script_dir/sglang-plx-acs.service" "$acs_unit"
   install -D -m 0644 "$script_dir/README.md" "$doc_dir/README.md"
 
-  # This installs the kernel MMIO reservation and safe NVIDIA ReBAR setting,
-  # then regenerates grub.cfg and every installed initramfs.
   "$host_config" --apply
 
   systemctl daemon-reload
   systemctl enable --now sglang-plx-acs.service
-  systemctl enable --now sglang-rebar-rearm.service
+  # Enable persistence for later boots, but arm this boot explicitly only after
+  # all files and GRUB state are known-good.
+  systemctl enable sglang-rebar-rearm.service
+  grub-reboot rebar-preboot-auto
 
   echo
   echo "Persistent RTX 5060 Ti ReBAR configuration installed."
   echo "GRUB next boot: $(grub-editenv list | awk -F= '$1 == "next_entry" {print $2}')"
-  echo "Reboot once. The automatic EFI pass will validate all 16 GPUs, apply"
-  echo "16 GiB BAR1, return to GRUB, and boot Ubuntu without operator input."
+  echo "Reboot once. The automatic EFI pass will validate all 16 GPUs and apply"
+  echo "16 GiB BAR1. If the EFI helper returns, GRUB will not recursively reload"
+  echo "the ReBAR menu entry."
 }
 
 check_configuration() {
@@ -188,7 +205,7 @@ check_configuration() {
 uninstall_configuration() {
   systemctl disable --now sglang-rebar-rearm.service \
     sglang-plx-acs.service 2>/dev/null || true
-  grub-editenv /boot/grub/grubenv unset next_entry 2>/dev/null || true
+  clear_rebar_grub_state
 
   rm -f -- \
     "$efi_dir/ReBarPreboot.efi" \
